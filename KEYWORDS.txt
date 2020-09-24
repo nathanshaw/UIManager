@@ -1,0 +1,9 @@
+UIManager           KEYWORD1
+
+addBut              KEYWORD2
+addPot              KEYWORD2
+setup               KEYWORD2
+testControls        KEYWORD2
+initalRead          KEYWORD2
+update              KEYWORD2
+printAll            KEYWORD2
