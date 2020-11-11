@@ -14,9 +14,11 @@
 
 class UIManager {
     public:
-        UIManager(uint16_t _polling_delay, float _pot_play, bool print);
+        UIManager(uint16_t _polling_delay, bool print);
         bool addBut(int pin, bool reverse, bool pull_up, bool *val, String name);
-        bool addPot(int pin, bool reverse, float *val, String name);
+        bool addPot(int pin, bool reverse, float play, float *val, String name);
+
+        // bool updatePotMapping(uint8_t which, double min, double max);
 
         void setup();
         void testControls(uint8_t times, uint16_t wait);
@@ -53,11 +55,10 @@ class UIManager {
         bool pot_active[MAX_POTS];
         // this is how much the pot reading has to change in order 
         // for a value update to be enacted
-        float pot_play = 0.0;
+        float pot_play[MAX_POTS];
 };
 
-UIManager::UIManager(uint16_t _polling_delay, float _pot_play, bool print) {
-    pot_play = _pot_play;
+UIManager::UIManager(uint16_t _polling_delay, bool print) {
     polling_delay = _polling_delay;
     print_updates = print;
 }
@@ -71,7 +72,7 @@ bool UIManager::addBut(int pin, bool reverse, bool pull_up, bool *val, String na
         but_pins[num_buttons] = pin;
         linked_but_vals[num_buttons] = val; // store the pointer to the linked value
         Serial.print("Added button ");Serial.print(but_names[num_buttons]);
-        Serial.print(" #");Serial.println(num_buttons);
+        Serial.print("\t#");Serial.println(num_buttons);
         num_buttons++;
         return true;
     } else {
@@ -81,8 +82,9 @@ bool UIManager::addBut(int pin, bool reverse, bool pull_up, bool *val, String na
     }
 }
 
-bool UIManager::addPot(int pin, bool reverse, float *val, String name) {
+bool UIManager::addPot(int pin, bool reverse, float play, float *val, String name) {
     if (num_pots < MAX_POTS){
+        pot_play[num_pots] = play;
         pot_names[num_pots] = name;
         pot_active[num_pots] = true;
         pot_reverse[num_pots] = reverse;
@@ -104,16 +106,26 @@ void UIManager::setup() {
     Serial.println("--------------- calling pinMode for user controls  --------------");
     Serial.println("-----------------------------------------------------------------");
     for (int i = 0; i < num_buttons; i++) {
+        Serial.print("discrete control #");
+        Serial.print(i);
         if (but_pullup[i] == false) {
+            Serial.println(" set to input");
             pinMode(but_pins[i], INPUT);
         } else if (but_pullup[i] == true) {
+            Serial.println(" set to input with internal pullup");
             pinMode(but_pins[i], INPUT_PULLUP);
+        }else {
+            Serial.println("WARNING - but_pullup[i] is not set correctly");
         }
     }
     for (int i = 0; i < num_pots; i++) {
+        Serial.print("continuous control #");
+        Serial.print(i);
+        Serial.println(" set to input");
         pinMode(pot_pins[i], INPUT);
     }
     delay(1000);
+    Serial.println("finished with pinMode()");
     testControls(20, 50);
     initalRead();
 }
@@ -138,6 +150,19 @@ void UIManager::testControls(uint8_t times, uint16_t wait) {
                 Serial.println(" is returning differing values, flagging as inactive");
             } else {
                 Serial.print(" . ");
+                // flip the state of the button quickly
+                // if there is no button present then this should
+                // encourage unstable readings
+                // likewise, if there is no pull-up this will 
+                // cause the same issues
+                pinMode(but_pins[i], OUTPUT);
+                digitalWrite(but_pins[i], !but_vals[i]);
+                digitalWrite(but_pins[i], but_vals[i]);
+                if (but_pullup[i] == false) {
+                    pinMode(but_pins[i], INPUT);
+                } else {
+                    pinMode(but_pins[i], INPUT_PULLUP);
+                }
             }
         }
         Serial.println();
@@ -153,8 +178,8 @@ void UIManager::testControls(uint8_t times, uint16_t wait) {
         for (int i = 0; i < num_pots; i++) {
             // read once for reference
             float reading = (float)analogRead(pot_pins[i])/1024.0;
-            if (reading > (pot_vals[i] + pot_play) ||
-                    reading < (pot_vals[i] - pot_play)) {
+            if (reading > (pot_vals[i] + pot_play[i]) ||
+                    reading < (pot_vals[i] - pot_play[i])) {
                 pot_active[i] = false;
                 Serial.print("WARNING POT " );
                 Serial.print(pot_names[i]);
@@ -201,8 +226,8 @@ void UIManager::initalRead() {
                 freading = 1.0 - ((float)analogRead(pot_pins[i]) / 1024.0);
             }
             // now check to see if it has changed enough for the new reading to be integrated
-            if (freading > pot_vals[i] + (pot_vals[i] * pot_play) ||
-                    freading < pot_vals[i] - (pot_vals[i] * pot_play)) {
+            if (freading > pot_vals[i] + (pot_vals[i] * pot_play[i]) ||
+                    freading < pot_vals[i] - (pot_vals[i] * pot_play[i])) {
                 pot_vals[i] = freading;
                 *linked_pot_vals[i] = freading;
                 if (print_updates == true) {
@@ -219,48 +244,48 @@ void UIManager::initalRead() {
 
 bool UIManager::update() {
     // update the buttons readings
-    if (last_reading > polling_delay) {
-        for (int i = 0; i < num_buttons; i++) {
-            if (but_active[i] == true){
-                bool reading = digitalRead(but_pins[i]);
-                // only update the values if the readings has changed since last time
-                if (but_vals[i] !=  reading) {
-                    // De-reference the pointer so the value is now updated to the reading
-                    *linked_but_vals[i] = reading;
-                    but_vals[i] = reading;
-                    if (print_updates == true) {
-                        Serial.print(but_names[i]);Serial.print(" value has changed to: ");
-                        Serial.println(*linked_but_vals[i]);
-                    }
-                }
-            }
-        }
-        // update the pot readings
-        for (int i = 0; i < num_pots; i++) {
-            if (pot_active[i] == true) {
-                float reading;
-                if (pot_reverse[i] == false) {
-                    reading = (float)analogRead(pot_pins[i]) / 1024.0;
-                } else {
-                    reading = 1.0 - ((float)analogRead(pot_pins[i]) / 1024.0);
-                }
-                // now check to see if it has changed enough for the new reading to be integrated
-                if (reading > (pot_vals[i] + pot_play) ||
-                        reading < (pot_vals[i] - pot_play)) {
-                    *linked_pot_vals[i] = reading;
-                    pot_vals[i] = reading;
-                    if (print_updates == true) {
-                        Serial.print(pot_names[i]);Serial.print(" value has changed to: ");
-                        Serial.println(*linked_pot_vals[i], 5);
-                    }
-                }
-            }
-        }
-        // update the Serial Commands TODO
-        return true;
-    } else {
+    if (last_reading < polling_delay) {
         return false;
     }
+    for (int i = 0; i < num_buttons; i++) {
+        if (but_active[i] == true){
+            bool reading = digitalRead(but_pins[i]);
+            // only update the values if the readings has changed since last time
+            if (but_vals[i] !=  reading) {
+                // De-reference the pointer so the value is now updated to the reading
+                *linked_but_vals[i] = reading;
+                but_vals[i] = reading;
+                if (print_updates == true) {
+                    Serial.print(but_names[i]);Serial.print(" value has changed to: ");
+                    Serial.println(*linked_but_vals[i]);
+                }
+            }
+        }
+    }
+    // update the pot readings
+    for (int i = 0; i < num_pots; i++) {
+        if (pot_active[i] == true) {
+            float reading;
+            if (pot_reverse[i] == false) {
+                reading = (float)analogRead(pot_pins[i]) / 1024.0;
+            } else {
+                reading = 1.0 - ((float)analogRead(pot_pins[i]) / 1024.0);
+            }
+            // now check to see if it has changed enough for the new reading to be integrated
+            if (reading > (pot_vals[i] + pot_play[i]) ||
+                    reading < (pot_vals[i] - pot_play[i])) {
+                *linked_pot_vals[i] = reading;
+                pot_vals[i] = reading;
+                if (print_updates == true) {
+                    Serial.print(pot_names[i]);Serial.print(" value has changed to: ");
+                    Serial.println(*linked_pot_vals[i], 5);
+                }
+            }
+        }
+    }
+    // update the Serial Commands TODO
+    last_reading = 0;
+    return true;
 }
 
 
