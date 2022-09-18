@@ -2,11 +2,11 @@
 #define __UIMANAGER_H__
 
 #ifndef MAX_BUTTONS
-#define MAX_BUTTONS 12
+#define MAX_BUTTONS 10
 #endif
 
 #ifndef MAX_POTS
-#define MAX_POTS 6
+#define MAX_POTS 4
 #endif
 
 // TODO - use inturrupts for the buttons
@@ -15,12 +15,14 @@
 class UIManager {
     public:
         UIManager(uint16_t _polling_delay, bool print);
-        bool addBut(int pin, bool reverse, bool pull_up, bool *val, String name);
+        bool addBut(int pin, bool pull_up, int low, int high, bool low_active, int *val, String name);
         bool addPot(int pin, bool reverse, float play, float *val, String name);
+
+        bool addPotRange(uint8_t idx, double min, double mid, double max);
 
         // bool updatePotMapping(uint8_t which, double min, double max);
 
-        void setup();
+        void setup(bool test_controls);
         void testControls(uint8_t times, uint16_t wait);
         void initalRead();
 
@@ -35,11 +37,14 @@ class UIManager {
 
         // Everything to keep the buts in order
         uint8_t num_buttons = 0;
-        bool but_vals[MAX_BUTTONS];
-        bool *linked_but_vals[MAX_BUTTONS];
+        int but_vals[MAX_BUTTONS];
+        int *linked_but_vals[MAX_BUTTONS];
+        int but_lows[MAX_BUTTONS];
+        int but_low_active[MAX_BUTTONS];
+        int but_highs[MAX_BUTTONS];
         String but_names[MAX_BUTTONS];
         int but_pins[MAX_BUTTONS];
-        bool but_reverse[MAX_BUTTONS];
+
         // will flip the reading orientation for buts when needed
         bool but_active[MAX_BUTTONS];
         bool but_pullup[MAX_BUTTONS];
@@ -47,7 +52,11 @@ class UIManager {
         // Everything to keep the pots in order
         uint8_t num_pots    = 0;
         float pot_vals[MAX_POTS];
+        float pot_raw_vals[MAX_POTS];
         float *linked_pot_vals[MAX_POTS];
+        float pot_min[4];
+        float pot_mid[4];
+        float pot_max[4];
         String pot_names[MAX_POTS];
         int pot_pins[MAX_POTS];
         // will flip the reading orientation for pots when needed
@@ -63,13 +72,15 @@ UIManager::UIManager(uint16_t _polling_delay, bool print) {
     print_updates = print;
 }
 
-bool UIManager::addBut(int pin, bool reverse, bool pull_up, bool *val, String name) {
+bool UIManager::addBut(int pin, bool pull_up, int low, int high, bool low_active, int *val, String name) {
     if (num_buttons < MAX_BUTTONS) {
+        but_low_active[num_buttons] = low_active;
         but_names[num_buttons] = name;
         but_pullup[num_buttons] = pull_up;
         but_active[num_buttons] = true;
-        but_reverse[num_buttons] = reverse;
         but_pins[num_buttons] = pin;
+        but_lows[num_buttons] = low;
+        but_highs[num_buttons] = high;
         linked_but_vals[num_buttons] = val; // store the pointer to the linked value
         Serial.print("Added button ");Serial.print(but_names[num_buttons]);
         Serial.print("\t#");Serial.println(num_buttons);
@@ -85,7 +96,7 @@ bool UIManager::addBut(int pin, bool reverse, bool pull_up, bool *val, String na
 bool UIManager::addPot(int pin, bool reverse, float play, float *val, String name) {
     if (num_pots < MAX_POTS){
         pot_play[num_pots] = play;
-        pot_names[num_pots] = name;
+        pot_names[num_pots] = name; 
         pot_active[num_pots] = true;
         pot_reverse[num_pots] = reverse;
         pot_pins[num_pots] = pin;
@@ -101,7 +112,18 @@ bool UIManager::addPot(int pin, bool reverse, float play, float *val, String nam
     }
 }
 
-void UIManager::setup() {
+bool UIManager::addPotRange(uint8_t idx, double min, double mid, double max) {
+    if (idx < num_pots) {
+        pot_min[idx] = min;
+        pot_mid[idx] = mid;
+        pot_max[idx] = max;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+void UIManager::setup(bool test_controls) {
     Serial.println("-----------------------------------------------------------------");
     Serial.println("--------------- calling pinMode for user controls  --------------");
     Serial.println("-----------------------------------------------------------------");
@@ -126,7 +148,9 @@ void UIManager::setup() {
     }
     delay(1000);
     Serial.println("finished with pinMode()");
-    testControls(20, 50);
+    if (test_controls) {
+        testControls(20, 50);
+    }
     initalRead();
 }
 
@@ -149,7 +173,8 @@ void UIManager::testControls(uint8_t times, uint16_t wait) {
                 Serial.print(but_names[i]);
                 Serial.println(" is returning differing values, flagging as inactive");
             } else {
-                Serial.print(" . ");
+                Serial.print(but_vals[i]);
+                Serial.print("\t");
                 // flip the state of the button quickly
                 // if there is no button present then this should
                 // encourage unstable readings
@@ -168,16 +193,43 @@ void UIManager::testControls(uint8_t times, uint16_t wait) {
         Serial.println();
         delay(wait);
     }
+
     Serial.println("-----------------------------------------------------------------");
     Serial.println("Testing Pots Now");
     for (int i = 0; i < num_pots; i++) {
-        pot_vals[i] = (float)analogRead(pot_pins[i])/1024.0;
+        int itemp;
+        if (pot_reverse[i] == false) {
+            itemp = analogRead(pot_pins[i]);
+        } else {
+            itemp = 1024 - analogRead(pot_pins[i]);
+        }
+
+        // scale either from min to mid or from mid to max depending on pot value
+        if (itemp < 512) {
+            pot_vals[i] = (itemp/512 * (pot_mid[i] - pot_min[i])) + pot_min[i];
+        } else {
+            pot_vals[i] = ((itemp - 512) / 512) * (pot_max[i] - pot_mid[i]) + pot_mid[i];
+        }
     }
+
     delay(wait);
     for (int t = 0; t < times; t++) {
         for (int i = 0; i < num_pots; i++) {
             // read once for reference
-            float reading = (float)analogRead(pot_pins[i])/1024.0;
+            float reading;
+            int itemp;
+            if (pot_reverse[i] == false) {
+                itemp = analogRead(pot_pins[i]);
+            } else {
+                itemp = 1024 - analogRead(pot_pins[i]);
+            }
+            // scale either from min to mid or from mid to max depending on pot value
+            if (itemp < 512) {
+                reading  = (itemp/512 * (pot_mid[i] - pot_min[i])) + pot_min[i];
+            } else {
+                reading  = ((itemp - 512) / 512) * (pot_max[i] - pot_mid[i]) + pot_mid[i];
+            }
+
             if (reading > (pot_vals[i] + pot_play[i]) ||
                     reading < (pot_vals[i] - pot_play[i])) {
                 pot_active[i] = false;
@@ -185,13 +237,13 @@ void UIManager::testControls(uint8_t times, uint16_t wait) {
                 Serial.print(pot_names[i]);
                 Serial.println(" is returning differing values, flagging as inactive");
             } else {
-                Serial.print(" . ");
+                Serial.print(reading);
+                Serial.print("\t");
             }
         }
         delay(wait);
         Serial.println();
     }
-
 }
 
 void UIManager::initalRead() {
@@ -203,7 +255,13 @@ void UIManager::initalRead() {
     // IF and only if they are operating correctly then the linked value should be changed
     for (int i = 0; i < num_buttons; i++) {
         if (but_active[i] == true) {
-            bool reading = digitalRead(but_pins[i]);
+            int reading;
+            bool temp = digitalRead(but_pins[i]);
+            if (temp == true) {
+                reading = but_highs[i];
+            } else {
+                reading = but_lows[i];
+            }
             // only update the values if the readings has changed since last time
             if (but_vals[i] !=  reading) {
                 // De-reference the pointer so the value is now updated to the reading
@@ -220,20 +278,23 @@ void UIManager::initalRead() {
     for (int i = 0; i < num_pots; i++) {
         if (pot_active[i] == true) {
             float freading;
+            int itemp;
             if (pot_reverse[i] == false) {
-                freading = (float)analogRead(pot_pins[i]) / 1024.0;
+                itemp = analogRead(pot_pins[i]);
             } else {
-                freading = 1.0 - ((float)analogRead(pot_pins[i]) / 1024.0);
+                itemp = 1024 - analogRead(pot_pins[i]);
             }
-            // now check to see if it has changed enough for the new reading to be integrated
-            if (freading > pot_vals[i] + (pot_vals[i] * pot_play[i]) ||
-                    freading < pot_vals[i] - (pot_vals[i] * pot_play[i])) {
-                pot_vals[i] = freading;
-                *linked_pot_vals[i] = freading;
-                if (print_updates == true) {
-                    Serial.print(pot_names[i]);Serial.print(" value has changed to: ");
-                    Serial.println(*linked_pot_vals[i], 5);
-                }
+            freading = (float)analogRead(pot_pins[i]) / 1024.0;
+            pot_raw_vals[i] = freading;
+            if (itemp < 512) {
+                pot_vals[i] = ((float)itemp/512.0 * (pot_mid[i] - pot_min[i])) + pot_min[i];
+            } else {
+                pot_vals[i] = (((float)itemp - 512) / 512.0) * (pot_max[i] - pot_mid[i]) + pot_mid[i];
+            }
+            *linked_pot_vals[i] = pot_vals[i];
+            if (print_updates == true) {
+                Serial.print(pot_names[i]);Serial.print(" value has changed to: ");
+                Serial.println(*linked_pot_vals[i], 5);
             }
         }
     }
@@ -249,38 +310,55 @@ bool UIManager::update() {
     }
     for (int i = 0; i < num_buttons; i++) {
         if (but_active[i] == true){
-            bool reading = digitalRead(but_pins[i]);
+            int reading;
+            bool temp = digitalRead(but_pins[i]);
+            if (temp == true) {
+                reading = but_highs[i];
+            } else {
+                reading = but_lows[i];
+            }
             // only update the values if the readings has changed since last time
             if (but_vals[i] !=  reading) {
                 // De-reference the pointer so the value is now updated to the reading
-                *linked_but_vals[i] = reading;
-                but_vals[i] = reading;
-                if (print_updates == true) {
-                    Serial.print(but_names[i]);Serial.print(" value has changed to: ");
-                    Serial.println(*linked_but_vals[i]);
+                if (reading == but_highs[i] || (reading == but_lows[i] && but_low_active[i]) ) { 
+                    *linked_but_vals[i] = reading;
+                    but_vals[i] = reading;
+                    if (print_updates == true) {
+                        Serial.print(but_names[i]);Serial.print(" value has changed to: ");
+                        Serial.println(*linked_but_vals[i]);
+                    }
                 }
             }
         }
     }
     // update the pot readings
+
+        // scale either from min to mid or from mid to max depending on pot value
     for (int i = 0; i < num_pots; i++) {
         if (pot_active[i] == true) {
-            float reading;
+            int itemp;
             if (pot_reverse[i] == false) {
-                reading = (float)analogRead(pot_pins[i]) / 1024.0;
+                itemp = analogRead(pot_pins[i]);
             } else {
-                reading = 1.0 - ((float)analogRead(pot_pins[i]) / 1024.0);
+                itemp = 1024 - analogRead(pot_pins[i]);
             }
+            float reading = (float)itemp / 1024.0;
+
             // now check to see if it has changed enough for the new reading to be integrated
-            if (reading > (pot_vals[i] + pot_play[i]) ||
-                    reading < (pot_vals[i] - pot_play[i])) {
-                *linked_pot_vals[i] = reading;
-                pot_vals[i] = reading;
+            if (reading > (pot_raw_vals[i] + pot_play[i]) ||
+                            reading < (pot_raw_vals[i] - pot_play[i])) {
+                if (itemp < 512) {
+                    pot_vals[i] = ((float)itemp/512.0 * (pot_mid[i] - pot_min[i])) + pot_min[i];
+                } else {
+                    pot_vals[i] = (((float)itemp - 512) / 512.0) * (pot_max[i] - pot_mid[i]) + pot_mid[i];
+                }
+                *linked_pot_vals[i] = pot_vals[i];
                 if (print_updates == true) {
                     Serial.print(pot_names[i]);Serial.print(" value has changed to: ");
                     Serial.println(*linked_pot_vals[i], 5);
                 }
             }
+            pot_raw_vals[i] = reading;
         }
     }
     // update the Serial Commands TODO
@@ -296,7 +374,8 @@ void UIManager::printAll() {
     Serial.println("----------- printing buttons --------------");
     Serial.println("-------------------------------------------");
     for (int i = 0; i < num_buttons; i++) {
-        Serial.print(but_names[i]);Serial.print(":\t");Serial.println(but_vals[i]);
+        Serial.print(but_names[i]);Serial.print(":\t");
+        Serial.println(but_vals[i]);
     }
     Serial.println("-------------------------------------------");
     Serial.println("------------ printing pots ----------------");
